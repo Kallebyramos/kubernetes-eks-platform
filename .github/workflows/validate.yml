@@ -29,6 +29,7 @@ jobs:
         run: terraform validate
         working-directory: terraform
 
+
   manifests:
     name: Manifest schema validation
     runs-on: ubuntu-latest
@@ -43,8 +44,6 @@ jobs:
           sudo mv kubeconform /usr/local/bin/
 
       - name: Validate Kubernetes manifests
-        # -ignore-missing-schemas skips CRDs (NodePool, EC2NodeClass, SparkApplication)
-        # that kubeconform doesn't have schemas for — standard resources are still checked
         run: |
           kubeconform \
             -strict \
@@ -52,3 +51,25 @@ jobs:
             -kubernetes-version 1.31.0 \
             -summary \
             manifests/
+
+
+  claude-pr-body:
+    name: Generate PR body with Claude
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Run Claude script
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python .github/scripts/claude_pr_body.py

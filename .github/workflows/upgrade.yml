@@ -2,7 +2,7 @@ name: Upgrade Check
 
 on:
   schedule:
-    - cron: '0 9 * * 1'  # every Monday at 09:00 UTC
+    - cron: '0 9 * * 1'
   workflow_dispatch:       # also triggerable manually from the Actions tab
 
 jobs:
