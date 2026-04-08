@@ -1,0 +1,54 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  terraform:
+    name: Terraform fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1"
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Init (downloads providers, no AWS creds needed)
+        run: terraform init -backend=false
+        working-directory: terraform
+
+      - name: Validate
+        run: terraform validate
+        working-directory: terraform
+
+  manifests:
+    name: Manifest schema validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSLo kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+          tar xf kubeconform.tar.gz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate Kubernetes manifests
+        # -ignore-missing-schemas skips CRDs (NodePool, EC2NodeClass, SparkApplication)
+        # that kubeconform doesn't have schemas for — standard resources are still checked
+        run: |
+          kubeconform \
+            -strict \
+            -ignore-missing-schemas \
+            -kubernetes-version 1.31.0 \
+            -summary \
+            manifests/

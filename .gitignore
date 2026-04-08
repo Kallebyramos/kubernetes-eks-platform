@@ -1,0 +1,18 @@
+# Terraform state
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/*.tfplan
+
+# Local variable overrides (keep sensitive values out of git)
+terraform/*.tfvars
+terraform/*.tfvars.json
+
+# AWS credentials / env files
+.env
+.envrc
+
+# OS
+.DS_Store
+Thumbs.db

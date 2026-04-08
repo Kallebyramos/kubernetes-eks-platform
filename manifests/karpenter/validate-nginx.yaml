@@ -1,0 +1,60 @@
+---
+# Karpenter validation using nginx.
+#
+# This deployment forces Karpenter to provision a new node by:
+#   1. Targeting Karpenter nodes explicitly (nodeSelector: nodepool=default)
+#      so pods can never schedule on the system managed node group.
+#   2. Running 3 replicas so the test is clearly visible in kubectl get nodes.
+#
+# Usage:
+#   kubectl apply  -f manifests/karpenter/validate-nginx.yaml
+#   kubectl get nodes -w                       # watch Karpenter add a node
+#   kubectl get pods -l app=karpenter-validate # confirm pods are Running
+#   kubectl delete -f manifests/karpenter/validate-nginx.yaml
+#   kubectl get nodes -w                       # watch Karpenter remove the node (~30s)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: karpenter-validate
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: karpenter-validate
+  template:
+    metadata:
+      labels:
+        app: karpenter-validate
+    spec:
+      # Target only nodes provisioned by Karpenter.
+      # The NodePool sets this label on every node it launches (see nodepool.yaml).
+      nodeSelector:
+        nodepool: default
+
+      containers:
+        - name: nginx
+          image: nginx:stable-alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "128Mi"
+
+---
+# Optional: expose nginx so you can curl it to confirm the node is truly working.
+apiVersion: v1
+kind: Service
+metadata:
+  name: karpenter-validate
+  namespace: default
+spec:
+  selector:
+    app: karpenter-validate
+  ports:
+    - port: 80
+      targetPort: 80

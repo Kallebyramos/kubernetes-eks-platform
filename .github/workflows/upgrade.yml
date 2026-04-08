@@ -1,0 +1,66 @@
+name: Upgrade Check
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # every Monday at 09:00 UTC
+  workflow_dispatch:       # also triggerable manually from the Actions tab
+
+jobs:
+  check-and-upgrade:
+    name: Check versions and open upgrade PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for upgrades
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Exit 0 = up to date. Exit 1 = upgrades found (writes upgrades.json).
+        # The shell `||` prevents the step from failing when exit code is 1.
+        run: |
+          python3 .github/scripts/check_upgrades.py \
+            && echo "has_upgrades=false" >> "$GITHUB_OUTPUT" \
+            || echo "has_upgrades=true"  >> "$GITHUB_OUTPUT"
+
+      - name: Apply version bumps to files
+        if: steps.check.outputs.has_upgrades == 'true'
+        run: python3 .github/scripts/apply_upgrades.py
+
+      - name: Generate PR description with Claude
+        if: steps.check.outputs.has_upgrades == 'true'
+        id: pr_body
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          body=$(python3 .github/scripts/claude_pr_body.py)
+          # Write multi-line output safely
+          {
+            echo "body<<EOF"
+            echo "$body"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create branch, commit, and open PR
+        if: steps.check.outputs.has_upgrades == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="chore/upgrade-$(date +%Y-%m-%d)"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$branch"
+          git add terraform/eks.tf terraform/vpc.tf docs/03-karpenter.md
+          git commit -m "chore: dependency upgrades $(date +%Y-%m-%d)"
+          git push origin "$branch"
+
+          gh pr create \
+            --title "chore: dependency upgrades $(date +%Y-%m-%d)" \
+            --body "${{ steps.pr_body.outputs.body }}" \
+            --label "dependencies"

@@ -1,0 +1,82 @@
+name: Integration Test
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  spark-on-kind:
+    name: Spark Operator on KinD
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KinD
+        run: |
+          curl -sSLo kind \
+            https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x kind
+          sudo mv kind /usr/local/bin/
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Create KinD cluster
+        # Single node for CI (control-plane also schedules workloads by default)
+        run: kind create cluster --name spark-lab-ci --wait 60s
+
+      - name: Install Spark Operator
+        run: |
+          helm repo add spark-operator https://kubeflow.github.io/spark-operator
+          helm repo update
+          helm upgrade --install spark-operator spark-operator/spark-operator \
+            --namespace spark-operator \
+            --create-namespace \
+            --set webhook.enable=true \
+            --wait \
+            --timeout 5m
+
+      - name: Create Spark service account and RBAC
+        run: |
+          kubectl create serviceaccount spark -n default
+          kubectl create clusterrolebinding spark-role \
+            --clusterrole=edit \
+            --serviceaccount=default:spark
+
+      - name: Submit Spark Pi job
+        run: kubectl apply -f manifests/spark/example-app-kind.yaml
+
+      - name: Wait for job to complete
+        run: |
+          echo "Polling SparkApplication state (max 10 min)..."
+          for i in $(seq 1 30); do
+            STATE=$(kubectl get sparkapplication spark-pi \
+              -o jsonpath='{.status.applicationState.state}' 2>/dev/null || echo "PENDING")
+            echo "[${i}/30] state=${STATE}"
+            case "$STATE" in
+              COMPLETED)
+                echo "Job completed successfully."
+                exit 0
+                ;;
+              FAILED|SUBMISSION_FAILED|INVALIDATING)
+                echo "Job failed with state: $STATE"
+                exit 1
+                ;;
+            esac
+            sleep 20
+          done
+          echo "Timed out waiting for job to complete."
+          exit 1
+
+      - name: Print driver logs
+        if: always()
+        run: kubectl logs spark-pi-driver 2>/dev/null || echo "Driver logs not available."
+
+      - name: Print SparkApplication status on failure
+        if: failure()
+        run: |
+          kubectl describe sparkapplication spark-pi || true
+          kubectl get events --sort-by='.lastTimestamp' || true
