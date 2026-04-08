@@ -18,13 +18,6 @@ jobs:
       # Install tooling
       # ----------------------------
 
-      - name: Install KinD
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind --version
-
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
 
@@ -32,16 +25,18 @@ jobs:
         uses: azure/setup-helm@v4
 
       # ----------------------------
-      # Create cluster
+      # Create KinD cluster
       # ----------------------------
 
       - name: Create KinD cluster
-        run: |
-          kind create cluster --name spark-lab-ci --wait 60s
-          kubectl cluster-info
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: spark-lab-ci
 
-      - name: Show cluster nodes
-        run: kubectl get nodes -o wide
+      - name: Verify cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes -o wide
 
       # ----------------------------
       # Install Spark Operator
