@@ -78,7 +78,7 @@ jobs:
       # ----------------------------
 
       - name: Submit Spark Pi job
-        run: kubectl apply -f manifests/spark/example-app-kind.yaml
+        run: kubectl apply -f ci/spark/spark-ci-test-kind.yaml
 
       - name: Verify SparkApplication created
         run: kubectl get sparkapplications
