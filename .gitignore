@@ -16,3 +16,6 @@ terraform/*.tfvars.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude settings
+.claude
