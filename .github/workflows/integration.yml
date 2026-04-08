@@ -14,24 +14,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ----------------------------
+      # Install tooling
+      # ----------------------------
+
       - name: Install KinD
         run: |
-          curl -sSLo kind \
-            https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
-          chmod +x kind
-          sudo mv kind /usr/local/bin/
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind --version
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
 
       - name: Install Helm
         uses: azure/setup-helm@v4
 
+      # ----------------------------
+      # Create cluster
+      # ----------------------------
+
       - name: Create KinD cluster
-        # Single node for CI (control-plane also schedules workloads by default)
-        run: kind create cluster --name spark-lab-ci --wait 60s
+        run: |
+          kind create cluster --name spark-lab-ci --wait 60s
+          kubectl cluster-info
+
+      - name: Show cluster nodes
+        run: kubectl get nodes -o wide
+
+      # ----------------------------
+      # Install Spark Operator
+      # ----------------------------
 
       - name: Install Spark Operator
         run: |
           helm repo add spark-operator https://kubeflow.github.io/spark-operator
           helm repo update
+
           helm upgrade --install spark-operator spark-operator/spark-operator \
             --namespace spark-operator \
             --create-namespace \
@@ -39,23 +59,49 @@ jobs:
             --wait \
             --timeout 5m
 
+      - name: Wait for Spark Operator rollout
+        run: |
+          kubectl rollout status deployment spark-operator-controller \
+            -n spark-operator --timeout=120s
+
+      - name: Verify CRDs
+        run: kubectl get crds | grep spark
+
+      # ----------------------------
+      # Prepare Spark execution
+      # ----------------------------
+
       - name: Create Spark service account and RBAC
         run: |
-          kubectl create serviceaccount spark -n default
+          kubectl create serviceaccount spark -n default || true
           kubectl create clusterrolebinding spark-role \
             --clusterrole=edit \
-            --serviceaccount=default:spark
+            --serviceaccount=default:spark || true
+
+      # ----------------------------
+      # Submit Spark job
+      # ----------------------------
 
       - name: Submit Spark Pi job
         run: kubectl apply -f manifests/spark/example-app-kind.yaml
 
+      - name: Verify SparkApplication created
+        run: kubectl get sparkapplications
+
+      # ----------------------------
+      # Wait for Spark job completion
+      # ----------------------------
+
       - name: Wait for job to complete
         run: |
           echo "Polling SparkApplication state (max 10 min)..."
+
           for i in $(seq 1 30); do
             STATE=$(kubectl get sparkapplication spark-pi \
               -o jsonpath='{.status.applicationState.state}' 2>/dev/null || echo "PENDING")
+
             echo "[${i}/30] state=${STATE}"
+
             case "$STATE" in
               COMPLETED)
                 echo "Job completed successfully."
@@ -63,13 +109,25 @@ jobs:
                 ;;
               FAILED|SUBMISSION_FAILED|INVALIDATING)
                 echo "Job failed with state: $STATE"
+                kubectl describe sparkapplication spark-pi
                 exit 1
                 ;;
             esac
+
             sleep 20
           done
+
           echo "Timed out waiting for job to complete."
+          kubectl describe sparkapplication spark-pi
           exit 1
+
+      # ----------------------------
+      # Debugging info
+      # ----------------------------
+
+      - name: Print cluster pods
+        if: always()
+        run: kubectl get pods -A
 
       - name: Print driver logs
         if: always()
