@@ -35,6 +35,10 @@ Use the local path first. Switch to AWS when you need Karpenter or real IAM/IRSA
 8. [Validation Strategy — Local vs. Production](#8-validation-strategy--local-vs-production)
 9. [How Everything Connects (End-to-End Flow)](#9-how-everything-connects-end-to-end-flow)
 10. [CI/CD Pipeline](#10-cicd-pipeline)
+    - [Workflow 1 — validate.yml](#workflow-1--validateyml-every-push--pr)
+    - [Workflow 2 — integration.yml](#workflow-2--integrationyml-every-pr--manual)
+    - [Workflow 3 — infra-pr-review.yml](#workflow-3--infra-pr-reviewyml-pr-touching-infrastructure)
+    - [Workflow 4 — upgrade.yml](#workflow-4--upgradeyml-every-monday--manual)
 11. [Cost Optimization Decisions](#11-cost-optimization-decisions)
 12. [Key Concepts to Memorize](#12-key-concepts-to-memorize)
 
@@ -170,15 +174,79 @@ not take down everything. For a lab this is the minimum viable HA setup.
 
 ### NAT Gateway
 
-Private subnet nodes need to reach the internet (to pull container images, call AWS
-APIs). They cannot have public IPs, so traffic goes:
+#### What problem it solves
+
+Nodes in private subnets have no public IP address — they are unreachable from the
+internet, which is good for security. But they still need *outbound* internet access
+to do things like:
+- Pull container images from Docker Hub or ECR
+- Call AWS APIs (EC2, SSM, STS...)
+- Download OS packages or Helm charts
+
+Without a route to the internet, every pod would fail to start because the image
+can't be pulled.
+
+#### What a NAT Gateway is
+
+NAT stands for **Network Address Translation**. A NAT Gateway is a managed AWS
+service that sits in a public subnet and acts as an exit point for private subnet
+traffic.
 
 ```
-Private node --> NAT Gateway (in public subnet) --> Internet Gateway --> Internet
+EC2 node (private subnet, no public IP)
+  |
+  | outbound request: GET docker.io/library/nginx
+  v
+NAT Gateway (public subnet, has an Elastic IP)
+  |
+  | rewrites the source IP to its own Elastic IP
+  v
+Internet Gateway
+  |
+  v
+Internet (Docker Hub, AWS APIs, etc.)
+  |
+  | response comes back to the Elastic IP
+  v
+NAT Gateway translates the destination back to the original private IP
+  |
+  v
+EC2 node receives the response
 ```
 
-This project uses **one NAT gateway** (cost optimization for a lab). Production would
-use one per AZ for resilience.
+The key point: **inbound connections are not allowed**. The NAT Gateway only
+allows connections that were initiated from inside the private subnet. Nothing
+from the internet can initiate a connection to your nodes. This is what makes
+private subnets safe.
+
+#### NAT vs. Internet Gateway
+
+| | Internet Gateway | NAT Gateway |
+|---|---|---|
+| Used by | Public subnets | Private subnets |
+| Allows inbound from internet | yes | no |
+| Allows outbound to internet | yes | yes |
+| Requires public IP on the resource | yes | no (NAT has its own Elastic IP) |
+| Managed by you | attached to VPC, no maintenance | fully managed by AWS |
+
+#### This project uses a single NAT Gateway
+
+```hcl
+# vpc.tf
+single_nat_gateway = true  # one NAT GW shared across both AZs
+```
+
+In production you would deploy one per AZ:
+
+```
+AZ1: Private Subnet → NAT GW 1 → Internet
+AZ2: Private Subnet → NAT GW 2 → Internet
+```
+
+This way, if AZ1 goes down, AZ2 nodes still have their own NAT path. With a single
+NAT Gateway, losing the AZ that hosts it means all private subnets lose internet
+access — even nodes in the other AZ. For a learning lab the cost savings outweigh
+this risk (~$32/month per extra NAT gateway).
 
 ### Tags and Karpenter discovery
 
@@ -1250,8 +1318,19 @@ This is why the cluster name matters — it's the glue between Terraform and Kar
 
 ## 10. CI/CD Pipeline
 
-The project ships with three GitHub Actions workflows. Understanding them reinforces
-the concepts from this guide because each workflow exercises a different layer.
+The project has four GitHub Actions workflows. Understanding them reinforces the
+concepts from this guide because each one exercises a different layer of the stack.
+
+### Overview
+
+| Workflow | Trigger | Claude involved? |
+|---|---|---|
+| `validate.yml` | every push / PR | yes — suggests PR body on PRs |
+| `integration.yml` | every PR / manual | no |
+| `infra-pr-review.yml` | PR touching `terraform/`, `manifests/`, `.github/` | yes — posts review comment |
+| `upgrade.yml` | every Monday / manual | yes — writes upgrade PR description |
+
+---
 
 ### Workflow 1 — `validate.yml` (every push / PR)
 
@@ -1259,25 +1338,34 @@ the concepts from this guide because each workflow exercises a different layer.
 push or PR to main
   |
   ├── job: terraform
-  │     terraform fmt -check   ← fails if any .tf file is not formatted
-  │     terraform init -backend=false  ← downloads providers, no AWS creds needed
-  │     terraform validate     ← checks HCL syntax and references
+  │     terraform fmt -check         ← fails if any .tf file is not formatted
+  │     terraform init -backend=false ← downloads providers, no AWS creds needed
+  │     terraform validate            ← checks HCL syntax and references
   │
-  └── job: manifests
-        kubeconform            ← validates standard Kubernetes objects against
-                                  JSON schemas for Kubernetes 1.31
-                                  (-ignore-missing-schemas skips CRDs it doesn't know)
+  ├── job: manifests
+  │     kubeconform                   ← validates standard K8s objects against
+  │                                      JSON schemas for Kubernetes 1.31
+  │                                      (-ignore-missing-schemas skips CRDs)
+  │
+  └── job: claude-pr-body  (PRs only)
+        pip install anthropic
+        python claude_pr_body.py      ← if upgrades.json exists, generates PR body
+                                         skips silently if no upgrades pending
 ```
 
-**Why `terraform init -backend=false`?** The `-backend=false` flag skips backend
-initialization (no S3/DynamoDB connection) but still downloads provider plugins from
-the Terraform Registry. No AWS credentials are needed because providers are downloaded
-from `registry.terraform.io`, not from AWS.
+**Why `terraform init -backend=false`?** Skips backend initialization (no
+S3/DynamoDB connection) but still downloads provider plugins from the Terraform
+Registry. No AWS credentials are needed.
 
 **Why kubeconform skips CRDs?** `NodePool`, `EC2NodeClass`, and `SparkApplication`
-are not built-in Kubernetes types — they are CRDs installed at runtime. Kubeconform
-doesn't have their schemas by default, so `-ignore-missing-schemas` is used. Standard
+are not built-in Kubernetes types — they are CRDs installed at runtime. Standard
 objects (ServiceAccount, Deployment, Service) are still validated.
+
+**`claude_pr_body.py` safe mode**: The script now checks for `upgrades.json` before
+calling the Claude API. If the file is missing or empty it exits cleanly with code 0,
+so the job never fails on non-upgrade PRs.
+
+---
 
 ### Workflow 2 — `integration.yml` (every PR + manual)
 
@@ -1285,25 +1373,71 @@ objects (ServiceAccount, Deployment, Service) are still validated.
 PR to main (or manual trigger)
   |
   └── job: spark-on-kind
-        kind create cluster --name spark-lab-ci  ← single node (lighter than local 3-node config)
-        helm install spark-operator
-        kubectl create serviceaccount spark
-        kubectl create clusterrolebinding spark-role
+        azure/setup-kubectl@v4         ← install kubectl on the runner
+        azure/setup-helm@v4            ← install Helm on the runner
+        helm/kind-action@v1            ← create KinD cluster (spark-lab-ci)
+        kubectl cluster-info           ← verify cluster is reachable
+        kubectl get nodes -o wide      ← confirm node is Ready
+        helm install spark-operator    ← with webhook enabled
+        kubectl rollout status         ← wait for operator deployment to be Ready
+        kubectl get crds | grep spark  ← confirm CRDs are installed
+        kubectl create serviceaccount spark (|| true — idempotent)
+        kubectl create clusterrolebinding spark-role (|| true)
         kubectl apply example-app-kind.yaml
-        poll SparkApplication state every 20s (max 10 min)
+        poll state every 20s, max 10 min
           → COMPLETED: exit 0
-          → FAILED:    exit 1 + print describe + events
-        kubectl logs spark-pi-driver  ← printed always, even on success
+          → FAILED/SUBMISSION_FAILED: kubectl describe + exit 1
+        kubectl get pods -A            ← always printed (good for debugging)
+        kubectl logs spark-pi-driver   ← always printed
 ```
 
-The CI cluster is single-node (control-plane also runs workloads) to keep the runner
-resource footprint small. The local config uses 3 nodes to simulate multi-node
-behavior better.
+Key improvements from the original version:
+- Uses `helm/kind-action@v1` (official GitHub Action) instead of manually downloading the kind binary
+- Waits for operator rollout with `kubectl rollout status` before submitting the job — avoids a race condition where the webhook isn't ready yet
+- Verifies CRDs are installed before submitting the SparkApplication
+- `|| true` on service account creation makes it idempotent (safe to re-run)
+- Prints all pods always, not just on failure
 
-The integration test proves the full local path works: operator install, RBAC,
-scheduling, job execution, and completion — without any AWS dependency.
+---
 
-### Workflow 3 — `upgrade.yml` (every Monday + manual)
+### Workflow 3 — `infra-pr-review.yml` (PR touching infrastructure)
+
+This workflow only triggers when a PR changes files in `terraform/`, `manifests/`,
+or `.github/`. It posts a Claude-generated review as a PR comment.
+
+```
+PR opened/updated touching terraform/, manifests/, .github/
+  |
+  └── job: review
+        actions/checkout@v4 (fetch-depth: 0  ← full git history needed for diff)
+        git fetch origin main
+        python infra_pr_review.py
+          → git diff origin/main...HEAD       ← full diff of the branch
+          → sends diff (up to 12000 chars) to Claude API
+          → Claude returns markdown with three sections:
+              ## What Changed
+              ## Risk Analysis
+              ## Things to Verify
+        actions/github-script@v7
+          → posts the Claude output as a comment on the PR
+             prefixed with "## 🤖 AI PR Analysis"
+```
+
+**Why `fetch-depth: 0`?** By default, `actions/checkout` fetches only the latest
+commit (shallow clone). A shallow clone doesn't have enough history to compute
+`git diff origin/main...HEAD`. Setting `fetch-depth: 0` fetches all commits so the
+diff is complete.
+
+**Why `paths:` filter?** The review is only useful for infrastructure changes.
+Running it on a doc edit would waste API calls and produce noise.
+
+**The diff limit (12000 chars)**: The script truncates the diff to avoid hitting
+Claude's context limits. Very large diffs still get reviewed — the most important
+changes are usually near the top.
+
+---
+
+### Workflow 4 — `upgrade.yml` (every Monday + manual)
 
 ```
 schedule: every Monday 09:00 UTC
@@ -1321,33 +1455,40 @@ schedule: every Monday 09:00 UTC
           |
           v
         claude_pr_body.py
+          → reads upgrades.json
           → calls Claude API (claude-sonnet-4-6)
-          → sends the list of version bumps as context
           → Claude writes a PR description with a "before merging" checklist
           |
           v
         git checkout -b chore/upgrade-YYYY-MM-DD
         git commit + push
-        gh pr create --title "chore: dependency upgrades ..." --body "<claude output>"
+        gh pr create --body "<claude output>"
 ```
 
-**major_only flag**: Terraform modules use `~> X.0` version constraints (e.g.,
-`~> 20.0` for the EKS module). This means Terraform already picks up `20.x` updates
-automatically — you only need to bump the major. The upgrade script only flags the
-module if a new major version (21.x, 22.x...) is available. For Karpenter (pinned to
-an exact version like `1.3.3`), any newer version triggers a bump.
+**major_only flag**: Terraform modules use `~> X.0` constraints (`~> 20.0` for the
+EKS module). Terraform handles minor/patch automatically — the script only flags a
+new major version (21.x, 22.x...). For Karpenter (exact pin like `1.3.3`), any
+newer version triggers a bump.
 
-**Why Claude for the PR description?** Version bumps often have breaking changes
-buried in changelogs. Claude reads the upgrade context and generates a checklist
-of things to verify before merging — it's faster than writing it manually and
-catches things you might forget.
+---
+
+### Scripts reference
+
+| Script | Called by | What it does |
+|---|---|---|
+| `check_upgrades.py` | upgrade.yml | Queries GitHub Releases API, writes `upgrades.json` |
+| `apply_upgrades.py` | upgrade.yml | Patches version strings in files |
+| `claude_pr_body.py` | validate.yml, upgrade.yml | Reads `upgrades.json`, generates PR description via Claude API |
+| `infra_pr_review.py` | infra-pr-review.yml | Diffs branch vs main, generates risk analysis via Claude API |
+
+---
 
 ### Required secrets
 
-| Secret | Where to set | Notes |
+| Secret | Where to set | Used by |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Settings → Secrets → Actions | Only needed for upgrade workflow |
-| `GITHUB_TOKEN` | automatic | Provided by GitHub Actions, no setup needed |
+| `ANTHROPIC_API_KEY` | Settings → Secrets → Actions | validate, infra-pr-review, upgrade |
+| `GITHUB_TOKEN` | automatic (GitHub provides it) | infra-pr-review, upgrade |
 
 ---
 

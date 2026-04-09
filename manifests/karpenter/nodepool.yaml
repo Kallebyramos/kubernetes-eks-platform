@@ -22,7 +22,7 @@ spec:
         # allow any size from medium up
         - key: karpenter.k8s.aws/instance-size
           operator: In
-          values: ["xlarge", "2xlarge", "4xlarge"]
+          values: ["xlarge", "2xlarge"]
 
         # prefer spot, fall back to on-demand
         - key: karpenter.sh/capacity-type

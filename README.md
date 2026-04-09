@@ -93,16 +93,17 @@ Personal learning stack replicating a production-grade data platform on AWS EKS.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| [validate](.github/workflows/validate.yml) | every push / PR | `terraform fmt`, `terraform validate`, manifest schema check |
+| [validate](.github/workflows/validate.yml) | every push / PR | `terraform fmt`, `terraform validate`, manifest schema check, Claude PR body suggestion |
 | [integration](.github/workflows/integration.yml) | every PR / manual | spins up KinD, runs Spark Pi job end-to-end, asserts COMPLETED |
+| [infra-pr-review](.github/workflows/infra-pr-review.yml) | PR touching `terraform/`, `manifests/`, `.github/` | Claude reviews the diff and posts a risk analysis comment on the PR |
 | [upgrade](.github/workflows/upgrade.yml) | every Monday / manual | checks latest versions of Karpenter + Terraform modules, opens a PR with bumps (PR description written by Claude) |
 
 ### Required GitHub secrets
 
 | Secret | Used by | How to get it |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | upgrade workflow | [console.anthropic.com](https://console.anthropic.com) → API Keys |
-| `GITHUB_TOKEN` | upgrade workflow | automatically provided by GitHub Actions — no setup needed |
+| `ANTHROPIC_API_KEY` | validate, infra-pr-review, upgrade | [console.anthropic.com](https://console.anthropic.com) → API Keys |
+| `GITHUB_TOKEN` | infra-pr-review, upgrade | automatically provided by GitHub Actions — no setup needed |
 
 ## Study
 

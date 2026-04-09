@@ -17,8 +17,18 @@ def main():
         print("ANTHROPIC_API_KEY is not set", file=sys.stderr)
         sys.exit(1)
 
+    #check if upgrades.json exists
+    if not os.path.exists("upgrades.json"):
+        print("No upgrades.json found. Skipping PR body generation.", file=sys.stderr)
+        sys.exit(0)
+
     with open("upgrades.json") as f:
         upgrades = json.load(f)
+
+    #skip if empty
+    if not upgrades:
+        print("No upgrades listed. Skipping PR body generation.", file=sys.stderr)
+        sys.exit(0)
 
     changes = "\n".join(
         f"- **{u['name']}**: `{u['current']}` → `{u['latest']}`"
