@@ -12,8 +12,16 @@ import urllib.request
 
 def get_diff():
     return subprocess.check_output(
-        ["git", "diff", "origin/main...HEAD"],
-        text=True
+        [
+            "git",
+            "diff",
+            "origin/main...HEAD",
+            "--",
+            "*.tf",
+            "manifests/",
+            ".github/workflows/",
+        ],
+        text=True,
     )
 
 
@@ -52,7 +60,7 @@ Highlight potential infrastructure risks or breaking changes.
 List 2-4 practical checks reviewers should perform.
 
 Git diff:
-{diff[:12000]}
+{diff[:8000]}
 """
 
     payload = {
