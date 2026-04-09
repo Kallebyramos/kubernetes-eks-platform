@@ -24,7 +24,7 @@ spec:
   driver:
     cores: 1
     memory: "256m"
-    serviceAccount: spark
+    serviceAccount: default
 
   executor:
     cores: 1
