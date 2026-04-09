@@ -23,7 +23,6 @@ spec:
 
   driver:
     cores: 1
-    coreLimit: "600m"
     memory: "256m"
     serviceAccount: spark
 

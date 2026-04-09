@@ -174,15 +174,79 @@ not take down everything. For a lab this is the minimum viable HA setup.
 
 ### NAT Gateway
 
-Private subnet nodes need to reach the internet (to pull container images, call AWS
-APIs). They cannot have public IPs, so traffic goes:
+#### What problem it solves
+
+Nodes in private subnets have no public IP address — they are unreachable from the
+internet, which is good for security. But they still need *outbound* internet access
+to do things like:
+- Pull container images from Docker Hub or ECR
+- Call AWS APIs (EC2, SSM, STS...)
+- Download OS packages or Helm charts
+
+Without a route to the internet, every pod would fail to start because the image
+can't be pulled.
+
+#### What a NAT Gateway is
+
+NAT stands for **Network Address Translation**. A NAT Gateway is a managed AWS
+service that sits in a public subnet and acts as an exit point for private subnet
+traffic.
 
 ```
-Private node --> NAT Gateway (in public subnet) --> Internet Gateway --> Internet
+EC2 node (private subnet, no public IP)
+  |
+  | outbound request: GET docker.io/library/nginx
+  v
+NAT Gateway (public subnet, has an Elastic IP)
+  |
+  | rewrites the source IP to its own Elastic IP
+  v
+Internet Gateway
+  |
+  v
+Internet (Docker Hub, AWS APIs, etc.)
+  |
+  | response comes back to the Elastic IP
+  v
+NAT Gateway translates the destination back to the original private IP
+  |
+  v
+EC2 node receives the response
 ```
 
-This project uses **one NAT gateway** (cost optimization for a lab). Production would
-use one per AZ for resilience.
+The key point: **inbound connections are not allowed**. The NAT Gateway only
+allows connections that were initiated from inside the private subnet. Nothing
+from the internet can initiate a connection to your nodes. This is what makes
+private subnets safe.
+
+#### NAT vs. Internet Gateway
+
+| | Internet Gateway | NAT Gateway |
+|---|---|---|
+| Used by | Public subnets | Private subnets |
+| Allows inbound from internet | yes | no |
+| Allows outbound to internet | yes | yes |
+| Requires public IP on the resource | yes | no (NAT has its own Elastic IP) |
+| Managed by you | attached to VPC, no maintenance | fully managed by AWS |
+
+#### This project uses a single NAT Gateway
+
+```hcl
+# vpc.tf
+single_nat_gateway = true  # one NAT GW shared across both AZs
+```
+
+In production you would deploy one per AZ:
+
+```
+AZ1: Private Subnet → NAT GW 1 → Internet
+AZ2: Private Subnet → NAT GW 2 → Internet
+```
+
+This way, if AZ1 goes down, AZ2 nodes still have their own NAT path. With a single
+NAT Gateway, losing the AZ that hosts it means all private subnets lose internet
+access — even nodes in the other AZ. For a learning lab the cost savings outweigh
+this risk (~$32/month per extra NAT gateway).
 
 ### Tags and Karpenter discovery
 
