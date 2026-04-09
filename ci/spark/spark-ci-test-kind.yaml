@@ -14,7 +14,7 @@ spec:
 
   mainApplicationFile: local:///opt/spark/examples/src/main/python/pi.py
   arguments:
-    - "1000"
+    - "100"
 
   sparkVersion: "3.5.1"
 
@@ -22,12 +22,12 @@ spec:
     type: Never
 
   driver:
-    cores: 1
-    coreLimit: "1200m"
-    memory: "512m"
-    labels:
-      version: 3.5.1
+    cores: 0.5
+    coreLimit: "600m"
+    memory: "256m"
     serviceAccount: spark
 
   executor:
-    instances: 0     # CI optimization
+    cores: 0.5
+    instances: 1
+    memory: "256m"
