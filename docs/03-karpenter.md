@@ -40,7 +40,7 @@ export KARPENTER_SQS_QUEUE=$(cd terraform && terraform output -raw karpenter_sqs
 
 # install
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
-  --version "1.3.3" \
+  --version "1.11.2" \
   --namespace kube-system \
   --set "settings.clusterName=${CLUSTER_NAME}" \
   --set "settings.clusterEndpoint=${CLUSTER_ENDPOINT}" \
